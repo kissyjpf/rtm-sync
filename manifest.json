@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-rtm-sync",
+	"name": "RTM Sync",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Sync Remember The Milk Task",
+	"author": "Osamu Kishiyama",
+	"authorUrl": "https://github.com/kissyjpf/obsidian-rtm-sync",
+	"isDesktopOnly": false
+}
