@@ -23,7 +23,7 @@ To use this plugin, **you must obtain your own API Key from Remember The Milk**.
 
 ## Installation
 
-1.  Create a folder named `obsidian-rtm-sync` inside your vault's `.obsidian/plugins/` directory.
+1.  Create a folder named `rtm-sync` inside your vault's `.obsidian/plugins/` directory.
 2.  Place `main.js` and `manifest.json` into that folder.
 3.  Reload Obsidian and enable the plugin in **Community Plugins**.
 
