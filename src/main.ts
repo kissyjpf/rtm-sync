@@ -1,5 +1,7 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFile, TFolder } from 'obsidian';
 import { MD5 } from 'crypto-js';
+
+declare const BUILD_TIME: string;
 
 // --- Configuration ---
 const RTM_AUTH_URL = 'https://www.rememberthemilk.com/services/auth/';
@@ -9,21 +11,29 @@ interface RtmPluginSettings {
 	apiKey: string;
 	sharedSecret: string;
 	authToken: string;
+	defaultDueForNewTask: 'none' | 'today';
+	noteCreationFolder: string;
+	importWithNotesAndLink: boolean;
 }
 
 const DEFAULT_SETTINGS: RtmPluginSettings = {
 	apiKey: '',
 	sharedSecret: '',
-	authToken: ''
+	authToken: '',
+	defaultDueForNewTask: 'none',
+	noteCreationFolder: '',
+	importWithNotesAndLink: false
 }
 
 // 内部で扱うタスク情報の構造
 interface FormattedTask {
 	name: string;
 	due: string;
+	start: string;
 	priority: string;
 	listName: string;
 	tags: string[];
+	notes: string[];
 	rtmId: { list: string; series: string; task: string };
 	rawPriority: string; 
 	rawDue: string;      
@@ -37,47 +47,67 @@ export default class RtmPlugin extends Plugin {
 		await this.loadSettings();
 		this.addSettingTab(new RtmSettingTab(this.app, this));
 
-		// 1. 一括ダウンロード
+		// 1. Download (Editor Insert) - All Incomplete
 		this.addCommand({
 			id: 'import-rtm-tasks',
 			name: 'Download all incomplete tasks',
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				if (!this.checkAuth()) return;
-				await this.fetchAndInsertTasks(editor, 'status:incomplete', false); 
+				await this.fetchAndProcessTasks('status:incomplete', false, (tasks) => {
+					this.insertTasksToEditor(editor, tasks);
+				});
 			}
 		});
 
-		// 2. 選択してダウンロード
+		// 2. Download (Editor Insert) - Select
 		this.addCommand({
 			id: 'select-rtm-tasks',
 			name: 'Select and import tasks',
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				if (!this.checkAuth()) return;
-				await this.fetchAndInsertTasks(editor, 'status:incomplete', true); 
+				await this.fetchAndProcessTasks('status:incomplete', true, (tasks) => {
+					this.insertTasksToEditor(editor, tasks);
+				});
 			}
 		});
 
-		// 3. フィルタ指定ダウンロード
+		// 3. Download (Editor Insert) - Custom Filter
 		this.addCommand({
 			id: 'import-rtm-tasks-custom',
 			name: 'Download tasks (Custom Filter)',
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				if (!this.checkAuth()) return;
 				new FilterModal(this.app, async (result) => {
-					await this.fetchAndInsertTasks(editor, result, true);
+					await this.fetchAndProcessTasks(result, true, (tasks) => {
+						this.insertTasksToEditor(editor, tasks);
+					});
 				}).open();
 			}
 		});
 
+		// 4. Create Note from Task
+		this.addCommand({
+			id: 'create-note-from-rtm-task',
+			name: 'Create note from RTM task',
+			callback: async () => {
+				if (!this.checkAuth()) return;
+				await this.fetchAndProcessTasks('status:incomplete', true, (tasks) => {
+					this.createNotesFromTasks(tasks);
+				});
+			}
+		});
+
+		// 5. Add Task (viewを渡す)
 		this.addCommand({
 			id: 'add-rtm-task',
 			name: 'Add cursor line to RTM',
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				if (!this.checkAuth()) return;
-				await this.addTaskFromEditor(editor);
+				await this.addTaskFromEditor(editor, view);
 			}
 		});
 
+		// 6. Complete Task
 		this.addCommand({
 			id: 'complete-rtm-task',
 			name: 'Complete task at cursor',
@@ -116,11 +146,11 @@ export default class RtmPlugin extends Plugin {
 	}
 
 	// Core Logic
-	async fetchAndInsertTasks(editor: Editor, filterStr: string, showSelectionUI: boolean) {
+	async fetchAndProcessTasks(filterStr: string, showSelectionUI: boolean, onSelected: (tasks: FormattedTask[]) => void) {
 		new Notice(`Fetching tasks...`);
 		try {
 			const listMap = await this.fetchListsMap();
-			const response = await this.callRtmApi('rtm.tasks.getList', { filter: filterStr });
+			const response = await this.callRtmApi('rtm.tasks.getList', { filter: filterStr, notes: '1' });
 
 			if (!response.rsp.tasks || !response.rsp.tasks.list) {
 				new Notice('No tasks found.');
@@ -142,39 +172,52 @@ export default class RtmPlugin extends Plugin {
 					if (!realListId && s.list_id) realListId = s.list_id;
 					if (!realListId) realListId = "MISSING"; 
 
-					// Date
 					let dueDisplay = "";
 					if (task.due && task.due !== "") {
 						const datePart = task.due.split('T')[0];
-						dueDisplay = ` 📅 ${datePart}`;
+						dueDisplay = `📅 ${datePart}`;
 					}
 
-					// Priority
+					let startDisplay = "";
+					if (task.start && task.start !== "") {
+						const startPart = task.start.split('T')[0];
+						startDisplay = `🛫 ${startPart}`;
+					}
+
 					let priDisplay = "";
 					switch (task.priority) {
-						case '1': priDisplay = " 🔺"; break;
-						case '2': priDisplay = " 🔼"; break;
-						case '3': priDisplay = " 🔽"; break;
+						case '1': priDisplay = "🔺"; break;
+						case '2': priDisplay = "🔼"; break;
+						case '3': priDisplay = "🔽"; break;
 					}
 
-					// List Name
 					let listNameDisplay = "";
 					const listName = listMap[realListId];
 					if (listName) listNameDisplay = listName;
 
-					// Tags
 					const tagArray: string[] = [];
 					if (s.tags && s.tags.tag) {
 						const rawTags = Array.isArray(s.tags.tag) ? s.tags.tag : [s.tags.tag];
 						rawTags.forEach((t: string) => tagArray.push(t));
 					}
 
+					const noteArray: string[] = [];
+					if (s.notes && s.notes.note) {
+						const rawNotes = Array.isArray(s.notes.note) ? s.notes.note : [s.notes.note];
+						rawNotes.forEach((n: any) => {
+							const text = n.$t || n.toString(); 
+							if (text) noteArray.push(text);
+						});
+					}
+
 					parsedTasks.push({
 						name: name,
 						due: dueDisplay,
+						start: startDisplay,
 						priority: priDisplay,
 						listName: listNameDisplay,
 						tags: tagArray,
+						notes: noteArray,
 						rtmId: { list: realListId, series: s.id, task: task.id },
 						rawPriority: task.priority,
 						rawDue: task.due
@@ -184,48 +227,105 @@ export default class RtmPlugin extends Plugin {
 
 			if (showSelectionUI) {
 				new TaskImportModal(this.app, parsedTasks, (selectedTasks) => {
-					this.insertParsedTasks(editor, selectedTasks);
+					onSelected(selectedTasks);
 				}).open();
 			} else {
-				this.insertParsedTasks(editor, parsedTasks);
+				onSelected(parsedTasks);
 			}
 
 		} catch (e) { console.error(e); new Notice('Fetch error.'); }
 	}
 
-	insertParsedTasks(editor: Editor, tasks: FormattedTask[]) {
-		if (tasks.length === 0) {
-			new Notice("No tasks selected.");
-			return;
-		}
+	insertTasksToEditor(editor: Editor, tasks: FormattedTask[]) {
+		if (tasks.length === 0) { new Notice("No tasks selected."); return; }
 
 		let textToInsert = "";
-		
 		for (const t of tasks) {
 			let listTag = "";
 			if (t.listName) {
 				const safeName = t.listName.replace(/[\s,.]+/g, '_');
 				listTag = ` #${safeName}`;
 			}
-
 			const tagsStr = t.tags.map(tag => ` #${tag}`).join("");
 			const idTag = `[🐮](rtm:${t.rtmId.list}:${t.rtmId.series}:${t.rtmId.task})`;
+			const priStr = t.priority ? ` ${t.priority}` : "";
+			const dueStr = t.due ? ` ${t.due}` : "";
+			textToInsert += `- [ ] ${idTag} ${t.name}${priStr}${dueStr}${listTag}${tagsStr}\n`;
 
-			textToInsert += `- [ ] ${idTag} ${t.name}${t.priority}${t.due}${listTag}${tagsStr}\n`;
+			if (this.settings.importWithNotesAndLink) {
+				const webLink = `https://www.rememberthemilk.com/app/#all/${t.rtmId.task}`;
+				textToInsert += `    - RTM Link: ${webLink}\n`;
+				if (t.notes && t.notes.length > 0) {
+					t.notes.forEach(note => {
+						const lines = note.split('\n');
+						lines.forEach(line => {
+							if (line.trim() !== '') {
+								textToInsert += `    - Note: ${line}\n`;
+							}
+						});
+					});
+				}
+			}
 		}
-
 		editor.replaceSelection(textToInsert);
 		new Notice(`${tasks.length} tasks inserted.`);
 	}
 
-	// 2. Add Task
-	async addTaskFromEditor(editor: Editor) {
+	async createNotesFromTasks(tasks: FormattedTask[]) {
+		if (tasks.length === 0) { new Notice("No tasks selected."); return; }
+		let createdCount = 0;
+		for (const t of tasks) {
+			const safeTitle = t.name.replace(/[\\/:*?"<>|]/g, '-');
+			
+			let folderPath = this.settings.noteCreationFolder.trim();
+			if (folderPath.endsWith('/')) { folderPath = folderPath.slice(0, -1); }
+			if (folderPath.startsWith('/')) { folderPath = folderPath.slice(1); }
+			
+			if (folderPath) {
+				await this.ensureFolderExists(folderPath);
+			}
+
+			let filePath = folderPath ? `${folderPath}/${safeTitle}.md` : `${safeTitle}.md`;
+			if (this.app.vault.getAbstractFileByPath(filePath)) {
+				filePath = folderPath ? `${folderPath}/${safeTitle}-${Date.now()}.md` : `${safeTitle}-${Date.now()}.md`;
+			}
+			const tagsStr = t.tags.map(tag => `#${tag}`).join(" ");
+			const listStr = t.listName ? `#${t.listName.replace(/[\s,.]+/g, '_')}` : "";
+			
+			let content = `# ${t.name}\n\n`;
+			content += `- **RTM Link**: [🐮 Open Task](rtm:${t.rtmId.list}:${t.rtmId.series}:${t.rtmId.task})\n`;
+			if (t.due) content += `- **Due**: ${t.due}\n`;
+			if (t.start) content += `- **Start**: ${t.start}\n`;
+			if (t.priority) content += `- **Priority**: ${t.priority}\n`;
+			if (listStr || tagsStr) content += `- **Tags**: ${listStr} ${tagsStr}\n`;
+			content += `\n---\n\n`;
+			if (t.notes.length > 0) {
+				content += `## Notes\n\n`;
+				t.notes.forEach(note => { content += `${note}\n\n`; });
+			} else { content += `(No notes in RTM)\n`; }
+
+			try {
+				await this.app.vault.create(filePath, content);
+				createdCount++;
+			} catch (e) {
+				console.error(`Failed to create file: ${filePath}`, e);
+				new Notice(`Failed to create note for "${t.name}"`);
+			}
+		}
+		new Notice(`${createdCount} notes created.`);
+	}
+
+	// 5. Add Task
+	async addTaskFromEditor(editor: Editor, view: MarkdownView) {
 		const cursor = editor.getCursor();
 		const lineText = editor.getLine(cursor.line);
 		const taskName = lineText.replace(/^[-*] \[[ x]\] /, '').replace(/^[-*] /, '').trim();
 		
 		if (!taskName) { new Notice('Task name is empty.'); return; }
 		new Notice(`Adding: ${taskName}`);
+
+		// 現在のノート名を取得
+		const sourceNote = view.file ? view.file.basename : "";
 
 		try {
 			const timeline = await this.getTimeline();
@@ -238,6 +338,38 @@ export default class RtmPlugin extends Plugin {
 			const taskObj = Array.isArray(series.task) ? series.task[0] : series.task;
 			const taskId = taskObj.id;
 
+			// 現在の設定に従ってデフォルト期日を設定
+			if (this.settings.defaultDueForNewTask === 'today') {
+				try {
+					await this.callRtmApi('rtm.tasks.setDueDate', {
+						timeline: timeline,
+						list_id: listId,
+						taskseries_id: taskSeriesId,
+						task_id: taskId,
+						due: 'today',
+						parse: '1'
+					});
+				} catch (err) {
+					console.error("Failed to set due date", err);
+				}
+			}
+
+			// RTMのノート（Note）としてObsidianのノート名を追加
+			if (sourceNote) {
+				try {
+					await this.callRtmApi('rtm.tasks.notes.add', {
+						timeline: timeline,
+						list_id: listId,
+						taskseries_id: taskSeriesId,
+						task_id: taskId,
+						note_title: "Obsidian Link",
+						note_text: `From Obsidian Note: [[${sourceNote}]]`
+					});
+				} catch (noteErr) {
+					console.error("Failed to add note to RTM task", noteErr);
+				}
+			}
+
 			const idTag = `[🐮](rtm:${listId}:${taskSeriesId}:${taskId})`;
 			const newLine = `- [ ] ${idTag} ${taskName}`;
 			editor.setLine(cursor.line, newLine);
@@ -245,7 +377,7 @@ export default class RtmPlugin extends Plugin {
 		} catch (e) { console.error("Add Task Error:", e); new Notice('Add error.'); }
 	}
 
-	// 3. Complete Task
+	// 6. Complete Task
 	async completeTaskInEditor(editor: Editor) {
 		const cursor = editor.getCursor();
 		const lineText = editor.getLine(cursor.line);
@@ -302,6 +434,23 @@ export default class RtmPlugin extends Plugin {
 		return res.json;
 	}
 
+	async ensureFolderExists(folderPath: string) {
+		if (!folderPath) return;
+		const parts = folderPath.split('/');
+		let currentPath = '';
+		for (const part of parts) {
+			if (!part) continue;
+			currentPath = currentPath === '' ? part : `${currentPath}/${part}`;
+			if (!this.app.vault.getAbstractFileByPath(currentPath)) {
+				try {
+					await this.app.vault.createFolder(currentPath);
+				} catch (e) {
+					console.error(`Failed to create folder: ${currentPath}`, e);
+				}
+			}
+		}
+	}
+
 	async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
 	async saveSettings() { await this.saveData(this.settings); }
 }
@@ -315,7 +464,8 @@ class TaskImportModal extends Modal {
 	constructor(app: App, tasks: FormattedTask[], onSubmit: (selected: FormattedTask[]) => void) {
 		super(app);
 		this.tasks = tasks;
-		this.selected = new Array(tasks.length).fill(true);
+		// デフォルトは選択なし
+		this.selected = new Array(tasks.length).fill(false);
 		this.onSubmit = onSubmit;
 	}
 
@@ -336,7 +486,6 @@ class TaskImportModal extends Modal {
 			itemDiv.style.borderBottom = "1px solid var(--background-modifier-border)";
 
 			const checkbox = itemDiv.createEl("input", { type: "checkbox" });
-			// ★修正: 配列アクセスが undefined になる可能性を考慮して ?? false を追加
 			checkbox.checked = this.selected[index] ?? false;
 			checkbox.onchange = (e) => {
 				// @ts-ignore
@@ -348,6 +497,7 @@ class TaskImportModal extends Modal {
 			let info = `<b>${task.name}</b>`;
 			if(task.listName) info += ` <small style="color:var(--text-muted)">[${task.listName}]</small>`;
 			if(task.due) info += ` <small style="color:var(--text-accent)">${task.due}</small>`;
+			if(task.notes && task.notes.length > 0) info += ` <small>📝</small>`;
 			label.innerHTML = info;
 		});
 
@@ -356,7 +506,17 @@ class TaskImportModal extends Modal {
 		btnDiv.style.justifyContent = "flex-end";
 		btnDiv.style.gap = "10px";
 
-		const importBtn = btnDiv.createEl("button", { text: "Import Selected" });
+		const toggleBtn = btnDiv.createEl("button", { text: "Select All" });
+		toggleBtn.onclick = () => {
+			const allSelected = this.selected.every(Boolean);
+			this.selected.fill(!allSelected);
+			const checkboxes = listContainer.querySelectorAll('input[type="checkbox"]');
+			checkboxes.forEach((cb: any) => cb.checked = !allSelected);
+			// ★修正: .text ではなく .textContent を使用
+			toggleBtn.textContent = allSelected ? "Select All" : "Deselect All";
+		};
+
+		const importBtn = btnDiv.createEl("button", { text: "Process Selected" });
 		importBtn.className = "mod-cta";
 		importBtn.onclick = () => {
 			const tasksToImport = this.tasks.filter((_, i) => this.selected[i]);
@@ -401,9 +561,58 @@ class RtmSettingTab extends PluginSettingTab {
 	display(): void {
 		const {containerEl} = this; containerEl.empty();
 		containerEl.createEl('h2', {text: 'Remember The Milk Settings'});
+		
+		const buildTime = typeof BUILD_TIME !== 'undefined' ? BUILD_TIME : "Unknown";
+		containerEl.createEl('p', {
+			text: `Version: ${this.plugin.manifest.version} (Build: ${buildTime})`,
+			cls: 'setting-item-description'
+		}).style.marginBottom = '2em';
+
 		new Setting(containerEl).setName('API Key').addText(text => text.setValue(this.plugin.settings.apiKey).onChange(async (v) => { this.plugin.settings.apiKey = v; await this.plugin.saveSettings(); }));
 		new Setting(containerEl).setName('Shared Secret').addText(text => text.setValue(this.plugin.settings.sharedSecret).onChange(async (v) => { this.plugin.settings.sharedSecret = v; await this.plugin.saveSettings(); }));
 		new Setting(containerEl).setName('Auth').addButton(b => b.setButtonText('Start Auth').onClick(async () => await this.startAuthProcess()));
+
+		new Setting(containerEl)
+			.setName('Default Due Date')
+			.setDesc('Setting for new tasks created from editor')
+			.addDropdown(drop => drop
+				.addOption('none', 'No Due Date')
+				.addOption('today', 'Today')
+				.setValue(this.plugin.settings.defaultDueForNewTask)
+				.onChange(async (v: 'none' | 'today') => {
+					this.plugin.settings.defaultDueForNewTask = v;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Note Creation Folder')
+			.setDesc('Folder to create notes from RTM tasks.')
+			.addDropdown(drop => {
+				drop.addOption('', '/ (Vault Root)');
+				const folders = this.app.vault.getAllLoadedFiles().filter(f => f instanceof TFolder) as TFolder[];
+				folders.forEach(f => {
+					if (f.path !== '/') {
+						drop.addOption(f.path, f.path);
+					}
+				});
+				drop.setValue(this.plugin.settings.noteCreationFolder);
+				drop.onChange(async (v) => {
+					this.plugin.settings.noteCreationFolder = v;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName('Import with Notes and RTM Link')
+			.setDesc('When inserting tasks to the editor, also include RTM task notes and links as sub-items.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.importWithNotesAndLink)
+				.onChange(async (v) => {
+					this.plugin.settings.importWithNotesAndLink = v;
+					await this.plugin.saveSettings();
+				})
+			);
 	}
 	async startAuthProcess() {
 		const rtm = this.plugin;
