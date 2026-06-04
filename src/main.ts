@@ -1,7 +1,5 @@
-
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFile, TFolder } from 'obsidian';
-import md5 from 'md5';
-
+import { md5 } from './md5';
 
 declare const BUILD_TIME: string;
 
