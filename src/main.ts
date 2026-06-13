@@ -487,7 +487,7 @@ export default class RtmPlugin extends Plugin {
 			currentPath = currentPath === '' ? part : `${currentPath}/${part}`;
 			if (!this.app.vault.getAbstractFileByPath(currentPath)) {
 				try {
-					await this.app.vault.createFolder(currentPath);
+					await this.app.vault.adapter.mkdir(currentPath);
 				} catch (e) {
 					console.error(`Failed to create folder: ${currentPath}`, e);
 				}
@@ -495,7 +495,7 @@ export default class RtmPlugin extends Plugin {
 		}
 	}
 
-	async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
+	async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<RtmPluginSettings>); }
 	async saveSettings() { await this.saveData(this.settings); }
 }
 
@@ -509,7 +509,7 @@ class TaskImportModal extends Modal {
 		super(app);
 		this.tasks = tasks;
 		// デフォルトは選択なし
-		this.selected = new Array(tasks.length).fill(false);
+		this.selected = new Array<boolean>(tasks.length).fill(false);
 		this.onSubmit = onSubmit;
 	}
 
@@ -591,7 +591,7 @@ class RtmSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: RtmPlugin) { super(app, plugin); this.plugin = plugin; }
 	display(): void {
 		const {containerEl} = this; containerEl.empty();
-		new Setting(containerEl).setName('RTM Sync').setHeading();
+		new Setting(containerEl).setName('Connection').setHeading();
 
 		const buildTime = typeof BUILD_TIME !== 'undefined' ? BUILD_TIME : "Unknown";
 		containerEl.createEl('p', {
