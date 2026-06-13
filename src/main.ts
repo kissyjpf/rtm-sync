@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFile, TFolder } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, TFolder } from 'obsidian';
 import { md5 } from './md5';
 
 declare const BUILD_TIME: string;
@@ -77,8 +77,8 @@ export default class RtmPlugin extends Plugin {
 			name: 'Download tasks (Custom Filter)',
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				if (!this.checkAuth()) return;
-				new FilterModal(this.app, async (result) => {
-					await this.fetchAndProcessTasks(result, true, (tasks) => {
+				new FilterModal(this.app, (result) => {
+					void this.fetchAndProcessTasks(result, true, (tasks) => {
 						this.insertTasksToEditor(editor, tasks);
 					});
 				}).open();
@@ -471,40 +471,39 @@ class TaskImportModal extends Modal {
 
 	onOpen() {
 		const { contentEl } = this;
-		contentEl.createEl("h2", { text: `Select Tasks (${this.tasks.length})` });
+		new Setting(contentEl).setName(`Select Tasks (${this.tasks.length})`).setHeading();
 
 		const listContainer = contentEl.createDiv();
-		listContainer.style.maxHeight = "400px";
-		listContainer.style.overflowY = "auto";
-		listContainer.style.marginBottom = "10px";
+		listContainer.setCssStyles({ maxHeight: "400px", overflowY: "auto", marginBottom: "10px" });
 
 		this.tasks.forEach((task, index) => {
 			const itemDiv = listContainer.createDiv();
-			itemDiv.style.display = "flex";
-			itemDiv.style.alignItems = "center";
-			itemDiv.style.padding = "5px 0";
-			itemDiv.style.borderBottom = "1px solid var(--background-modifier-border)";
+			itemDiv.setCssStyles({ display: "flex", alignItems: "center", padding: "5px 0", borderBottom: "1px solid var(--background-modifier-border)" });
 
 			const checkbox = itemDiv.createEl("input", { type: "checkbox" });
 			checkbox.checked = this.selected[index] ?? false;
 			checkbox.onchange = (e) => {
-				// @ts-ignore
-				this.selected[index] = e.target.checked;
+				this.selected[index] = (e.target as HTMLInputElement).checked;
 			};
 
 			const label = itemDiv.createSpan();
-			label.style.marginLeft = "10px";
-			let info = `<b>${task.name}</b>`;
-			if(task.listName) info += ` <small style="color:var(--text-muted)">[${task.listName}]</small>`;
-			if(task.due) info += ` <small style="color:var(--text-accent)">${task.due}</small>`;
-			if(task.notes && task.notes.length > 0) info += ` <small>📝</small>`;
-			label.innerHTML = info;
+			label.setCssStyles({ marginLeft: "10px" });
+
+			const nameEl = label.createEl("b", { text: task.name });
+			if (task.listName) {
+				const listEl = label.createEl("small", { text: ` [${task.listName}]` });
+				listEl.setCssStyles({ color: "var(--text-muted)" });
+			}
+			if (task.due) {
+				const dueEl = label.createEl("small", { text: ` ${task.due}` });
+				dueEl.setCssStyles({ color: "var(--text-accent)" });
+			}
+			if (task.notes && task.notes.length > 0) label.createEl("small", { text: " 📝" });
+			void nameEl;
 		});
 
 		const btnDiv = contentEl.createDiv();
-		btnDiv.style.display = "flex";
-		btnDiv.style.justifyContent = "flex-end";
-		btnDiv.style.gap = "10px";
+		btnDiv.setCssStyles({ display: "flex", justifyContent: "flex-end", gap: "10px" });
 
 		const toggleBtn = btnDiv.createEl("button", { text: "Select All" });
 		toggleBtn.onclick = () => {
@@ -560,13 +559,14 @@ class RtmSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: RtmPlugin) { super(app, plugin); this.plugin = plugin; }
 	display(): void {
 		const {containerEl} = this; containerEl.empty();
-		containerEl.createEl('h2', {text: 'Remember The Milk Settings'});
-		
+		new Setting(containerEl).setName('Remember The Milk Settings').setHeading();
+
 		const buildTime = typeof BUILD_TIME !== 'undefined' ? BUILD_TIME : "Unknown";
-		containerEl.createEl('p', {
+		const versionEl = containerEl.createEl('p', {
 			text: `Version: ${this.plugin.manifest.version} (Build: ${buildTime})`,
 			cls: 'setting-item-description'
-		}).style.marginBottom = '2em';
+		});
+		versionEl.setCssStyles({ marginBottom: '2em' });
 
 		new Setting(containerEl).setName('API Key').addText(text => text.setValue(this.plugin.settings.apiKey).onChange(async (v) => { this.plugin.settings.apiKey = v; await this.plugin.saveSettings(); }));
 		new Setting(containerEl).setName('Shared Secret').addText(text => text.setValue(this.plugin.settings.sharedSecret).onChange(async (v) => { this.plugin.settings.sharedSecret = v; await this.plugin.saveSettings(); }));
@@ -634,7 +634,7 @@ class RtmSettingTab extends PluginSettingTab {
 		Object.keys(authParams).sort().forEach(k => authSigString += k + authParams[k]);
 		const apiSig = md5(authSigString);
 		window.open(`${RTM_AUTH_URL}?api_key=${apiKey}&perms=delete&frob=${frob}&api_sig=${apiSig}`);
-		new TokenModal(this.app, frob, rtm, async () => { this.display(); }).open();
+		new TokenModal(this.app, frob, rtm, () => { this.display(); }).open();
 	}
 }
 
@@ -657,7 +657,7 @@ class TokenModal extends Modal {
 					await this.plugin.saveSettings();
 					new Notice('Success!'); this.onSuccess(); this.close();
 				} else { new Notice('Failed.'); }
-			} catch (e) { new Notice('Error.'); }
+			} catch { new Notice('Error.'); }
 		}));
 	}
 	onClose() { this.contentEl.empty(); }

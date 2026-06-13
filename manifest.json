@@ -2,7 +2,7 @@
 	"id": "rtm-sync",
 	"name": "RTM Sync",
 	"version": "1.3.3",
-	"minAppVersion": "0.15.0",
+	"minAppVersion": "1.0.0",
 	"description": "Sync Remember The Milk Tasks.",
 	"author": "Osamu Kishiyama",
 	"authorUrl": "https://github.com/kissyjpf",
