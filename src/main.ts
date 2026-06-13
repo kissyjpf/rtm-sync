@@ -210,7 +210,7 @@ export default class RtmPlugin extends Plugin {
 
 				for (const s of seriesArray) {
 					const name = s.name;
-					const task: RtmTask = Array.isArray(s.task) ? s.task[0] : s.task;
+					const task: RtmTask = Array.isArray(s.task) ? s.task[0] as RtmTask : s.task;
 
 					let realListId = list.id;
 					if (!realListId && s.list_id) realListId = s.list_id;
@@ -372,12 +372,12 @@ export default class RtmPlugin extends Plugin {
 			const res = await this.callRtmApi('rtm.tasks.add', { timeline: timeline, name: taskName, parse: '1' });
 
 			const rawList = res.rsp.tasks?.list;
-			const list: RtmTaskList = Array.isArray(rawList) ? rawList[0] : (rawList ?? { id: '', taskseries: undefined });
+			const list: RtmTaskList = (Array.isArray(rawList) ? rawList[0] : rawList) as RtmTaskList;
 			const listId = list.id;
 			const seriesRaw = list.taskseries;
-			const series: RtmTaskSeries = Array.isArray(seriesRaw) ? seriesRaw[0] : (seriesRaw ?? { id: '', name: '', task: { id: '', due: '', start: '', priority: '', completed: '' } });
+			const series: RtmTaskSeries = (Array.isArray(seriesRaw) ? seriesRaw[0] : seriesRaw) as RtmTaskSeries;
 			const taskSeriesId = series.id;
-			const taskObj: RtmTask = Array.isArray(series.task) ? series.task[0] : series.task;
+			const taskObj: RtmTask = (Array.isArray(series.task) ? series.task[0] : series.task) as RtmTask;
 			const taskId = taskObj.id;
 
 			// 現在の設定に従ってデフォルト期日を設定
@@ -428,9 +428,9 @@ export default class RtmPlugin extends Plugin {
 
 		if (!match) { new Notice(`Error: No RTM Link found.`); return; }
 
-		const listId = match[1];
-		const seriesId = match[2];
-		const taskId = match[3];
+		const listId = match[1] as string;
+		const seriesId = match[2] as string;
+		const taskId = match[3] as string;
 
 		if (!listId || listId === 'MISSING') { new Notice('Error: List ID invalid.'); return; }
 
@@ -452,8 +452,9 @@ export default class RtmPlugin extends Plugin {
 	async getTimeline(): Promise<string> {
 		if (this.timeline) return this.timeline;
 		const res = await this.callRtmApi('rtm.timelines.create');
-		this.timeline = res.rsp.timeline ?? '';
-		return this.timeline;
+		const tl = res.rsp.timeline ?? '';
+		this.timeline = tl;
+		return tl;
 	}
 
 	async callRtmApi(method: string, params: Record<string, string> = {}): Promise<RtmResponse> {
